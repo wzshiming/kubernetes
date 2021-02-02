@@ -342,3 +342,67 @@ func TestKillPodNowFunc(t *testing.T) {
 		t.Errorf("Pod update type was %v, but expected %v", syncPodRecords[0].updateType, kubetypes.SyncPodKill)
 	}
 }
+
+func Test_getGracePeriod(t *testing.T) {
+	var i int64 = 10
+
+	type args struct {
+		opt *UpdatePodOptions
+	}
+	tests := []struct {
+		name  string
+		args  args
+		want  int64
+		want1 bool
+	}{
+		{
+			args: args{
+				opt: &UpdatePodOptions{
+					UpdateType: kubetypes.SyncPodKill,
+					KillPodOptions: &KillPodOptions{
+						PodTerminationGracePeriodSecondsOverride: &i,
+					},
+				},
+			},
+			want:  10,
+			want1: true,
+		},
+		{
+			args: args{
+				opt: &UpdatePodOptions{
+					UpdateType: kubetypes.SyncPodUpdate,
+					Pod: &v1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							DeletionGracePeriodSeconds: &i,
+						},
+					},
+				},
+			},
+			want:  10,
+			want1: true,
+		},
+		{
+			args: args{
+				opt: &UpdatePodOptions{
+					UpdateType: kubetypes.SyncPodUpdate,
+					Pod: &v1.Pod{
+						ObjectMeta: metav1.ObjectMeta{},
+					},
+				},
+			},
+			want:  0,
+			want1: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, got1 := getGracePeriod(tt.args.opt)
+			if got != tt.want {
+				t.Errorf("getGracePeriod() got = %v, want %v", got, tt.want)
+			}
+			if got1 != tt.want1 {
+				t.Errorf("getGracePeriod() got1 = %v, want %v", got1, tt.want1)
+			}
+		})
+	}
+}
