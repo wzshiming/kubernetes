@@ -22,9 +22,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"k8s.io/klog/v2"
-	"k8s.io/mount-utils"
-
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,7 +32,9 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	core "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/record"
+	utiltesting "k8s.io/client-go/util/testing"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/kubelet/volumemanager/cache"
 	"k8s.io/kubernetes/pkg/volume"
@@ -43,6 +42,7 @@ import (
 	"k8s.io/kubernetes/pkg/volume/util"
 	"k8s.io/kubernetes/pkg/volume/util/hostutil"
 	"k8s.io/kubernetes/pkg/volume/util/operationexecutor"
+	"k8s.io/mount-utils"
 )
 
 const (
@@ -55,7 +55,6 @@ const (
 	nodeName                     = k8stypes.NodeName("mynodename")
 	kubeletPodsDir               = "fake-dir"
 	testOperationBackOffDuration = 100 * time.Millisecond
-	reconcilerSyncWaitDuration   = 10 * time.Second
 )
 
 func hasAddedPods() bool { return true }
@@ -1181,6 +1180,8 @@ func Test_Run_Positive_VolumeFSResizeControllerAttachEnabled(t *testing.T) {
 }
 
 func Test_UncertainDeviceGlobalMounts(t *testing.T) {
+	t.Parallel()
+
 	var tests = []struct {
 		name                   string
 		deviceState            operationexecutor.DeviceMountState
@@ -1226,6 +1227,7 @@ func Test_UncertainDeviceGlobalMounts(t *testing.T) {
 		for _, tc := range tests {
 			testName := fmt.Sprintf("%s [%s]", tc.name, mode)
 			t.Run(testName+"[", func(t *testing.T) {
+				t.Parallel()
 
 				pv := &v1.PersistentVolume{
 					ObjectMeta: metav1.ObjectMeta{
@@ -1309,15 +1311,14 @@ func Test_UncertainDeviceGlobalMounts(t *testing.T) {
 				dsw.MarkVolumesReportedInUse([]v1.UniqueVolumeName{volumeName})
 
 				// Start the reconciler to fill ASW.
-				stopChan, stoppedChan := make(chan struct{}), make(chan struct{})
-				go func() {
-					reconciler.Run(stopChan)
-					close(stoppedChan)
-				}()
+				stopChan := make(chan struct{})
+				go reconciler.Run(stopChan)
 				waitForVolumeToExistInASW(t, volumeName, asw)
 				if tc.volumeName == volumetesting.TimeoutAndFailOnMountDeviceVolumeName {
-					// Wait upto 10s for reconciler to catch up
-					time.Sleep(reconcilerSyncWaitDuration)
+					// Wait for reconciler to catchup
+					for !reconciler.StatesHasBeenSynced() {
+						time.Sleep(time.Second)
+					}
 				}
 
 				if tc.volumeName == volumetesting.SuccessAndFailOnMountDeviceName ||
@@ -1325,7 +1326,9 @@ func Test_UncertainDeviceGlobalMounts(t *testing.T) {
 					// wait for mount and then break it via remount
 					waitForMount(t, fakePlugin, volumeName, asw)
 					asw.MarkRemountRequired(podName)
-					time.Sleep(reconcilerSyncWaitDuration)
+					for !reconciler.StatesHasBeenSynced() {
+						time.Sleep(time.Second)
+					}
 				}
 
 				if tc.deviceState == operationexecutor.DeviceMountUncertain {
@@ -1356,6 +1359,8 @@ func Test_UncertainDeviceGlobalMounts(t *testing.T) {
 }
 
 func Test_UncertainVolumeMountState(t *testing.T) {
+	t.Parallel()
+
 	var tests = []struct {
 		name                   string
 		volumeState            operationexecutor.VolumeMountState
@@ -1407,6 +1412,8 @@ func Test_UncertainVolumeMountState(t *testing.T) {
 		for _, tc := range tests {
 			testName := fmt.Sprintf("%s [%s]", tc.name, mode)
 			t.Run(testName, func(t *testing.T) {
+				t.Parallel()
+
 				pv := &v1.PersistentVolume{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: tc.volumeName,
@@ -1488,15 +1495,14 @@ func Test_UncertainVolumeMountState(t *testing.T) {
 				dsw.MarkVolumesReportedInUse([]v1.UniqueVolumeName{volumeName})
 
 				// Start the reconciler to fill ASW.
-				stopChan, stoppedChan := make(chan struct{}), make(chan struct{})
-				go func() {
-					reconciler.Run(stopChan)
-					close(stoppedChan)
-				}()
+				stopChan := make(chan struct{})
+				go reconciler.Run(stopChan)
 				waitForVolumeToExistInASW(t, volumeName, asw)
 				if tc.volumeName == volumetesting.TimeoutAndFailOnSetupVolumeName {
-					// Wait upto 10s for reconciler to catchup
-					time.Sleep(reconcilerSyncWaitDuration)
+					// Wait for reconciler to catchup
+					for !reconciler.StatesHasBeenSynced() {
+						time.Sleep(time.Second)
+					}
 				}
 
 				if tc.volumeName == volumetesting.SuccessAndFailOnSetupVolumeName ||
@@ -1504,7 +1510,9 @@ func Test_UncertainVolumeMountState(t *testing.T) {
 					// wait for mount and then break it via remount
 					waitForMount(t, fakePlugin, volumeName, asw)
 					asw.MarkRemountRequired(podName)
-					time.Sleep(reconcilerSyncWaitDuration)
+					for !reconciler.StatesHasBeenSynced() {
+						time.Sleep(time.Second)
+					}
 				}
 
 				if tc.volumeState == operationexecutor.VolumeMountUncertain {
@@ -1661,6 +1669,7 @@ func retryWithExponentialBackOff(initialDuration time.Duration, fn wait.Conditio
 
 func createTestClient() *fake.Clientset {
 	fakeClient := &fake.Clientset{}
+	devicePath, _ := utiltesting.MkTmpdir("/fake/path")
 	fakeClient.AddReactor("get", "nodes",
 		func(action core.Action) (bool, runtime.Object, error) {
 			return true, &v1.Node{
@@ -1669,11 +1678,12 @@ func createTestClient() *fake.Clientset {
 					VolumesAttached: []v1.AttachedVolume{
 						{
 							Name:       "fake-plugin/fake-device1",
-							DevicePath: "/fake/path",
+							DevicePath: devicePath,
 						},
 					}},
 			}, nil
 		})
+
 	fakeClient.AddReactor("*", "*", func(action core.Action) (bool, runtime.Object, error) {
 		return true, nil, fmt.Errorf("no reaction implemented for %s", action)
 	})
