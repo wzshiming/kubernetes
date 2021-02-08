@@ -3204,6 +3204,8 @@ type PodValidationOptions struct {
 	AllowInvalidPodDeletionCost bool
 	// Allow pod spec to use non-integer multiple of huge page unit size
 	AllowIndivisibleHugePagesValues bool
+	// Allow negative termination grace period seconds
+	AllowNegativeTerminationGracePeriodSeconds bool
 }
 
 // ValidatePodSingleHugePageResources checks if there are multiple huge
@@ -3343,6 +3345,13 @@ func ValidatePodSpec(spec *core.PodSpec, podMeta *metav1.ObjectMeta, fldPath *fi
 		value := *spec.ActiveDeadlineSeconds
 		if value < 1 || value > math.MaxInt32 {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("activeDeadlineSeconds"), value, validation.InclusiveRangeError(1, math.MaxInt32)))
+		}
+	}
+
+	if !opts.AllowNegativeTerminationGracePeriodSeconds && spec.TerminationGracePeriodSeconds != nil {
+		value := *spec.TerminationGracePeriodSeconds
+		if value < 0 || value > math.MaxInt32 {
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("terminationGracePeriodSeconds"), value, validation.InclusiveRangeError(0, math.MaxInt32)))
 		}
 	}
 

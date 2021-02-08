@@ -103,9 +103,9 @@ func BeforeDelete(strategy RESTDeleteStrategy, ctx context.Context, obj runtime.
 		// 2. Delete the object from storage.
 		// If the update succeeds, but the delete fails (network error, internal storage error, etc.),
 		// a resource was previously left in a state that was non-recoverable.  We
-		// check if the existing stored resource has a grace period as 0 and if so
+		// check if the existing stored resource has a grace period <= 0 and if so
 		// attempt to delete immediately in order to recover from this scenario.
-		if objectMeta.GetDeletionGracePeriodSeconds() == nil || *objectMeta.GetDeletionGracePeriodSeconds() == 0 {
+		if objectMeta.GetDeletionGracePeriodSeconds() == nil || *objectMeta.GetDeletionGracePeriodSeconds() <= 0 {
 			return false, false, nil
 		}
 		// only a shorter grace period may be provided by a user
@@ -113,10 +113,13 @@ func BeforeDelete(strategy RESTDeleteStrategy, ctx context.Context, obj runtime.
 			period := int64(*options.GracePeriodSeconds)
 			if period >= *objectMeta.GetDeletionGracePeriodSeconds() {
 				return false, true, nil
+			} else if period < 0 {
+				// clip to zero
+				period = 0
 			}
 			newDeletionTimestamp := metav1.NewTime(
 				objectMeta.GetDeletionTimestamp().Add(-time.Second * time.Duration(*objectMeta.GetDeletionGracePeriodSeconds())).
-					Add(time.Second * time.Duration(*options.GracePeriodSeconds)))
+					Add(time.Second * time.Duration(period)))
 			objectMeta.SetDeletionTimestamp(&newDeletionTimestamp)
 			objectMeta.SetDeletionGracePeriodSeconds(&period)
 			return true, false, nil
