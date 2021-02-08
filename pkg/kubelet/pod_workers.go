@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -296,6 +296,9 @@ func killPodNow(podWorkers PodWorkers, recorder record.EventRecorder) eviction.K
 			gracePeriod = *gracePeriodOverride
 		} else if pod.Spec.TerminationGracePeriodSeconds != nil {
 			gracePeriod = *pod.Spec.TerminationGracePeriodSeconds
+		}
+		if gracePeriod < 0 {
+			gracePeriod = 0
 		}
 
 		// we timeout and return an error if we don't get a callback within a reasonable time.

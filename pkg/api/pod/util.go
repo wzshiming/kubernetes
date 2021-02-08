@@ -331,6 +331,10 @@ func usesHugePagesInProjectedEnv(item api.Container) bool {
 	return false
 }
 
+func hasNegativeTerminationGracePeriodSeconds(podSpec *api.PodSpec) bool {
+	return podSpec.TerminationGracePeriodSeconds != nil && *podSpec.TerminationGracePeriodSeconds < 0
+}
+
 // usesMultipleHugePageResources returns true if the pod spec uses more than
 // one size of hugepage
 func usesMultipleHugePageResources(podSpec *api.PodSpec) bool {
@@ -438,6 +442,8 @@ func GetValidationOptionsFromPodSpecAndMeta(podSpec, oldPodSpec *api.PodSpec, po
 	}
 
 	if oldPodSpec != nil {
+		// if old spec had negative terminationGracePeriodSeconds, we must allow it
+		opts.AllowNegativeTerminationGracePeriodSeconds = hasNegativeTerminationGracePeriodSeconds(oldPodSpec)
 		// if old spec used multiple huge page sizes, we must allow it
 		opts.AllowMultipleHugePageResources = opts.AllowMultipleHugePageResources || usesMultipleHugePageResources(oldPodSpec)
 		// if old spec used hugepages in downward api, we must allow it

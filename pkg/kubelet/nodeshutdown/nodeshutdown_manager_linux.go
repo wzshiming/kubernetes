@@ -241,6 +241,9 @@ func (m *Manager) processShutdownEvent() error {
 			// If the pod's spec specifies a termination gracePeriod which is less than the gracePeriodOverride calculated, use the pod spec termination gracePeriod.
 			if pod.Spec.TerminationGracePeriodSeconds != nil && *pod.Spec.TerminationGracePeriodSeconds <= gracePeriodOverride {
 				gracePeriodOverride = *pod.Spec.TerminationGracePeriodSeconds
+				if gracePeriodOverride < 0 {
+					gracePeriodOverride = 0
+				}
 			}
 
 			klog.V(1).InfoS("Shutdown manager killing pod with gracePeriod", "pod", klog.KObj(pod), "gracePeriod", gracePeriodOverride)

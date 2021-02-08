@@ -159,6 +159,9 @@ func (podStrategy) CheckGracefulDelete(ctx context.Context, obj runtime.Object, 
 			period = *pod.Spec.TerminationGracePeriodSeconds
 		}
 	}
+	if period < 0 {
+		period = 0
+	}
 	// if the pod is not scheduled, delete immediately
 	if len(pod.Spec.NodeName) == 0 {
 		period = 0
