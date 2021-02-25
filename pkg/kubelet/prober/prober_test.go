@@ -57,21 +57,23 @@ func TestFormatURL(t *testing.T) {
 	}
 }
 
-func TestFindPortByName(t *testing.T) {
+func TestFindPort(t *testing.T) {
 	container := v1.Container{
 		Ports: []v1.ContainerPort{
 			{
 				Name:          "foo",
 				ContainerPort: 8080,
+				Protocol:      v1.ProtocolTCP,
 			},
 			{
 				Name:          "bar",
 				ContainerPort: 9000,
+				Protocol:      v1.ProtocolTCP,
 			},
 		},
 	}
 	want := 8080
-	got, err := findPortByName(container, "foo")
+	got, err := findPort(container, "foo", v1.ProtocolTCP)
 	if got != want || err != nil {
 		t.Errorf("Expected %v, got %v, err: %v", want, got, err)
 	}
@@ -98,7 +100,7 @@ func TestGetURLParts(t *testing.T) {
 	for _, test := range testCases {
 		state := v1.PodStatus{PodIP: "127.0.0.1"}
 		container := v1.Container{
-			Ports: []v1.ContainerPort{{Name: "found", ContainerPort: 93}},
+			Ports: []v1.ContainerPort{{Name: "found", ContainerPort: 93, Protocol: v1.ProtocolTCP}},
 			LivenessProbe: &v1.Probe{
 				Handler: v1.Handler{
 					HTTPGet: test.probe,
@@ -151,7 +153,7 @@ func TestGetTCPAddrParts(t *testing.T) {
 	for _, test := range testCases {
 		host := "1.2.3.4"
 		container := v1.Container{
-			Ports: []v1.ContainerPort{{Name: "found", ContainerPort: 93}},
+			Ports: []v1.ContainerPort{{Name: "found", ContainerPort: 93, Protocol: v1.ProtocolTCP}},
 			LivenessProbe: &v1.Probe{
 				Handler: v1.Handler{
 					TCPSocket: test.probe,

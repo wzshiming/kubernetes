@@ -207,7 +207,7 @@ func extractPort(param intstr.IntOrString, container v1.Container) (int, error) 
 	case intstr.Int:
 		port = param.IntValue()
 	case intstr.String:
-		if port, err = findPortByName(container, param.StrVal); err != nil {
+		if port, err = findPort(container, param.StrVal, v1.ProtocolTCP); err != nil {
 			// Last ditch effort - maybe it was an int stored as string?
 			if port, err = strconv.Atoi(param.StrVal); err != nil {
 				return port, err
@@ -222,10 +222,13 @@ func extractPort(param intstr.IntOrString, container v1.Container) (int, error) 
 	return port, fmt.Errorf("invalid port number: %v", port)
 }
 
-// findPortByName is a helper function to look up a port in a container by name.
-func findPortByName(container v1.Container, portName string) (int, error) {
+// findPort is a helper function to look up a port in a container by name and protocol.
+func findPort(container v1.Container, portName string, protocol v1.Protocol) (int, error) {
 	for _, port := range container.Ports {
 		if port.Name == portName {
+			if protocol != "" && port.Protocol != protocol {
+				return 0, fmt.Errorf("found the port %q but its protocol is %s instead of %s", portName, port.Protocol, protocol)
+			}
 			return int(port.ContainerPort), nil
 		}
 	}
