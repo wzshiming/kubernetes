@@ -41,6 +41,10 @@ func FromServices(services []*v1.Service) []v1.EnvVar {
 			continue
 		}
 
+		if service.Name == "kubernetes" {
+			continue
+		}
+
 		// Host
 		name := makeEnvVariableName(service.Name) + "_SERVICE_HOST"
 		result = append(result, v1.EnvVar{Name: name, Value: service.Spec.ClusterIP})
