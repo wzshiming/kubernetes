@@ -43,6 +43,10 @@ import (
 	"k8s.io/component-base/featuregate"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/klog/v2"
+	schedulerv1beta1 "k8s.io/kube-scheduler/config/v1beta1"
+	"k8s.io/kubernetes/pkg/scheduler"
+	schedulerapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
+	schedulerscheme "k8s.io/kubernetes/pkg/scheduler/apis/config/scheme"
 	"k8s.io/kubernetes/test/integration/framework"
 	testutils "k8s.io/kubernetes/test/utils"
 	"sigs.k8s.io/yaml"
@@ -94,6 +98,9 @@ type testCase struct {
 	// TODO(#93792): reduce config toil by having a default pod and node spec per
 	// testCase? CreatePods and CreateNodes ops will inherit these unless
 	// manually overridden.
+
+	// Profiles to set before running the test. Optional.
+	Profiles []*schedulerProfile
 }
 
 func (tc *testCase) collectsMetrics() bool {
@@ -376,7 +383,21 @@ func runWorkload(b *testing.B, tc *testCase, w *workload) []DataItem {
 	// 30 minutes should be plenty enough even for the 5000-node tests.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	finalFunc, podInformer, client, dynClient := mustSetupScheduler()
+
+	opt := []scheduler.Option{}
+	if tc.Profiles != nil {
+		profiles := []schedulerapi.KubeSchedulerProfile{}
+		for _, profile := range tc.Profiles {
+			p, err := profile.KubeSchedulerProfile()
+			if err != nil {
+				b.Fatal(err)
+			}
+			profiles = append(profiles, p)
+		}
+		opt = append(opt, scheduler.WithProfiles(profiles...))
+	}
+
+	finalFunc, podInformer, client, dynClient := mustSetupScheduler(opt...)
 	b.Cleanup(finalFunc)
 
 	var mu sync.Mutex
@@ -812,4 +833,37 @@ func getCustomVolumeFactory(pvTemplate *v1.PersistentVolume) func(id int) *v1.Pe
 		}
 		return pv
 	}
+}
+
+//  schedulerProfile is a scheduling profile.
+type schedulerProfile struct {
+	SchedulerName string
+	Plugins       *schedulerapi.Plugins
+	PluginConfig  []PluginConfig
+}
+
+func (s *schedulerProfile) KubeSchedulerProfile() (schedulerapi.KubeSchedulerProfile, error) {
+	out := schedulerapi.KubeSchedulerProfile{
+		SchedulerName: s.SchedulerName,
+		Plugins:       s.Plugins,
+	}
+	codec := schedulerscheme.Codecs.UniversalDecoder()
+
+	for _, conf := range s.PluginConfig {
+		gvk := schedulerv1beta1.SchemeGroupVersion.WithKind(conf.Name + "Args")
+		obj, _, err := codec.Decode(conf.Args, &gvk, nil)
+		if err != nil {
+			return schedulerapi.KubeSchedulerProfile{}, err
+		}
+		out.PluginConfig = append(out.PluginConfig, schedulerapi.PluginConfig{
+			Name: conf.Name,
+			Args: obj,
+		})
+	}
+	return out, nil
+}
+
+type PluginConfig struct {
+	Name string
+	Args json.RawMessage
 }

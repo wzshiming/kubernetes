@@ -28,6 +28,7 @@ import (
 	"sort"
 	"time"
 
+	"k8s.io/kubernetes/pkg/scheduler"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -60,7 +61,7 @@ var dataItemsDir = flag.String("data-items-dir", "", "destination directory for 
 // remove resources after finished.
 // Notes on rate limiter:
 //   - client rate limit is set to 5000.
-func mustSetupScheduler() (util.ShutdownFunc, coreinformers.PodInformer, clientset.Interface, dynamic.Interface) {
+func mustSetupScheduler(opt ...scheduler.Option) (util.ShutdownFunc, coreinformers.PodInformer, clientset.Interface, dynamic.Interface) {
 	apiURL, apiShutdown := util.StartApiserver()
 
 	cfg := &restclient.Config{
@@ -73,7 +74,7 @@ func mustSetupScheduler() (util.ShutdownFunc, coreinformers.PodInformer, clients
 	client := clientset.NewForConfigOrDie(cfg)
 	dynClient := dynamic.NewForConfigOrDie(cfg)
 
-	_, podInformer, schedulerShutdown := util.StartScheduler(client)
+	_, podInformer, schedulerShutdown := util.StartScheduler(client, opt...)
 	fakePVControllerShutdown := util.StartFakePVController(client)
 
 	shutdownFunc := func() {

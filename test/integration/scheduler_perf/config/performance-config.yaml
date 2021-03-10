@@ -475,3 +475,51 @@
     params:
       initNodes: 5000
       measurePods: 2000
+
+- name: SchedulingWithNodeLabelChurn
+  profiles:
+  - schedulerName: nodelabel-scheduler
+    plugins:
+      filter:
+        enabled:
+        - name: NodeLabel
+      score:
+        enabled:
+        - name: NodeLabel
+          weight: 1
+    pluginConfig:
+    - name: NodeLabel
+      args:
+        presentLabels:
+          - "foo"
+        absentLabels: []
+        presentLabelsPreference:
+          - "bar"
+        absentLabelsPreference: []
+  workloadTemplate:
+    - opcode: createNodes
+      countParam: $initNodes
+    - opcode: createPods
+      countParam: $initPods
+      podTemplatePath: config/pod-default.yaml
+      skipWaitToCompletion: true
+    - opcode: churn
+      mode: create
+      countParam: $initNodes
+      templatePaths:
+        - config/node-with-nodelabel.yaml
+    - opcode: createPods
+      countParam: $measurePods
+      podTemplatePath: config/pod-with-nodelabel.yaml
+      collectMetrics: true
+  workloads:
+    - name: 1000Nodes
+      params:
+        initNodes: 1000
+        initPods: 2000
+        measurePods: 1000
+    - name: 5000Nodes
+      params:
+        initNodes: 5000
+        initPods: 1000
+        measurePods: 2000
