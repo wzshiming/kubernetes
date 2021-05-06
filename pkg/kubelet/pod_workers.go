@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -34,6 +34,10 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/eviction"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/kubelet/util/queue"
+)
+
+const (
+	shortenedGracePeriodIntervalSeconds = 3
 )
 
 // OnCompleteFunc is a function that is invoked when an operation completes.
@@ -119,6 +123,9 @@ type podWorkers struct {
 	// undelivered if it comes in while the worker is working.
 	lastUndeliveredWorkUpdate map[types.UID]UpdatePodOptions
 
+	// Tracks all deleting pod.
+	recordDeleting map[types.UID]recordDeleting
+
 	workQueue queue.WorkQueue
 
 	// This function is run to sync the desired stated of pod.
@@ -139,12 +146,18 @@ type podWorkers struct {
 	podCache kubecontainer.Cache
 }
 
+type recordDeleting struct {
+	DeleteTime  time.Time
+	GracePeriod int64
+}
+
 func newPodWorkers(syncPodFn syncPodFnType, recorder record.EventRecorder, workQueue queue.WorkQueue,
 	resyncInterval, backOffPeriod time.Duration, podCache kubecontainer.Cache) *podWorkers {
 	return &podWorkers{
 		podUpdates:                map[types.UID]chan UpdatePodOptions{},
 		isWorking:                 map[types.UID]bool{},
 		lastUndeliveredWorkUpdate: map[types.UID]UpdatePodOptions{},
+		recordDeleting:            map[types.UID]recordDeleting{},
 		syncPodFn:                 syncPodFn,
 		recorder:                  recorder,
 		workQueue:                 workQueue,
@@ -193,42 +206,95 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan UpdatePodOptions) {
 	}
 }
 
+func (p *podWorkers) getWorker(uid types.UID) chan UpdatePodOptions {
+	podUpdates, exists := p.podUpdates[uid]
+	if exists {
+		return podUpdates
+	}
+
+	// We need to have a buffer here, because checkForUpdates() method that
+	// puts an update into channel is called from the same goroutine where
+	// the channel is consumed. However, it is guaranteed that in such case
+	// the channel is empty, so buffer of size 1 is enough.
+	podUpdates = make(chan UpdatePodOptions, 1)
+	p.podUpdates[uid] = podUpdates
+
+	// Creating a new pod worker either means this is a new pod, or that the
+	// kubelet just restarted. In either case the kubelet is willing to believe
+	// the status of the pod for the first pod worker sync. See corresponding
+	// comment in syncPod.
+	go func() {
+		defer runtime.HandleCrash()
+		p.managePodLoop(podUpdates)
+	}()
+	return podUpdates
+}
+
 // Apply the new setting to the specified pod.
 // If the options provide an OnCompleteFunc, the function is invoked if the update is accepted.
 // Update requests are ignored if a kill pod request is pending.
 func (p *podWorkers) UpdatePod(options *UpdatePodOptions) {
 	pod := options.Pod
 	uid := pod.UID
-	var podUpdates chan UpdatePodOptions
-	var exists bool
 
+	now := time.Now()
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
-	if podUpdates, exists = p.podUpdates[uid]; !exists {
-		// We need to have a buffer here, because checkForUpdates() method that
-		// puts an update into channel is called from the same goroutine where
-		// the channel is consumed. However, it is guaranteed that in such case
-		// the channel is empty, so buffer of size 1 is enough.
-		podUpdates = make(chan UpdatePodOptions, 1)
-		p.podUpdates[uid] = podUpdates
 
-		// Creating a new pod worker either means this is a new pod, or that the
-		// kubelet just restarted. In either case the kubelet is willing to believe
-		// the status of the pod for the first pod worker sync. See corresponding
-		// comment in syncPod.
-		go func() {
-			defer runtime.HandleCrash()
-			p.managePodLoop(podUpdates)
-		}()
-	}
 	if !p.isWorking[pod.UID] {
 		p.isWorking[pod.UID] = true
-		podUpdates <- *options
+		p.getWorker(uid) <- *options
+		p.recordDeletingTime(options, now)
+	} else if record, exist := p.recordDeleting[pod.UID]; exist {
+		// If grace period is reduced after stopContainer is requested at least once,
+		// we must reduce the time subtracted from the original request (original grace period - current grace period)
+		// and execute the kill (SIGKILL, not TERM) to the container runtime,
+		// but make sure than no less than 3s have elapsed - so the updated t_kill = t_delete + max(new_grace_period, 3s).
+		// If t_kill > t_now, we should kill the pod immediately.
+		if options.UpdateType == kubetypes.SyncPodKill ||
+			options.UpdateType == kubetypes.SyncPodUpdate {
+			gracePeriod, ok := getGracePeriod(options)
+			if ok && record.GracePeriod > gracePeriod {
+				p.removeWorker(pod.UID)
+				p.isWorking[pod.UID] = true
+				newGracePeriod := gracePeriod
+				if newGracePeriod < shortenedGracePeriodIntervalSeconds {
+					newGracePeriod = shortenedGracePeriodIntervalSeconds
+				}
+				killTime := record.DeleteTime.Add(time.Duration(newGracePeriod) * time.Second)
+				if killTime.Before(now) {
+					killNowOpt := UpdatePodOptions{
+						Pod:            options.Pod,
+						MirrorPod:      options.MirrorPod,
+						UpdateType:     kubetypes.SyncPodKill,
+						OnCompleteFunc: options.OnCompleteFunc,
+						KillPodOptions: options.KillPodOptions,
+					}
+					if killNowOpt.KillPodOptions == nil {
+						killNowOpt.KillPodOptions = &KillPodOptions{}
+					}
+					if killNowOpt.KillPodOptions.PodStatusFunc == nil {
+						killNowOpt.KillPodOptions.PodStatusFunc = func(p *v1.Pod, podStatus *kubecontainer.PodStatus) v1.PodStatus {
+							return options.Pod.Status
+						}
+					}
+					var gracePeriodSecondsOverride int64 = 0
+					killNowOpt.KillPodOptions.PodTerminationGracePeriodSecondsOverride = &gracePeriodSecondsOverride
+
+					p.getWorker(uid) <- killNowOpt
+					p.recordDeletingTime(&killNowOpt, record.DeleteTime)
+				} else {
+					p.getWorker(uid) <- *options
+					p.recordDeletingTime(options, record.DeleteTime)
+				}
+			}
+		}
 	} else {
 		// if a request to kill a pod is pending, we do not let anything overwrite that request.
 		update, found := p.lastUndeliveredWorkUpdate[pod.UID]
 		if !found || update.UpdateType != kubetypes.SyncPodKill {
 			p.lastUndeliveredWorkUpdate[pod.UID] = *options
+			p.recordDeletingTime(options, now)
 		}
 	}
 }
@@ -241,6 +307,7 @@ func (p *podWorkers) removeWorker(uid types.UID) {
 		// since per-pod goroutine won't be able to put it to the already closed
 		// channel when it finishes processing the current work update.
 		delete(p.lastUndeliveredWorkUpdate, uid)
+		delete(p.recordDeleting, uid)
 	}
 }
 func (p *podWorkers) ForgetWorker(uid types.UID) {
@@ -284,6 +351,37 @@ func (p *podWorkers) checkForUpdates(uid types.UID) {
 	} else {
 		p.isWorking[uid] = false
 	}
+}
+
+func (p *podWorkers) recordDeletingTime(options *UpdatePodOptions, deleteTime time.Time) {
+	// When the kubelet sees a pod is deleted for the first time,
+	// it should take the current time (time.Now()) and record that as the time the first deletion was seen t_delete,
+	// and then trigger a container TERM (stopContainer) with an expected time to force terminate
+	// t_kill = t_delete + max(grace_period, 3s).
+	if gracePeriod, ok := getGracePeriod(options); ok {
+		record, exist := p.recordDeleting[options.Pod.UID]
+		if !exist {
+			record.DeleteTime = deleteTime
+			record.GracePeriod = gracePeriod
+		} else if record.GracePeriod > gracePeriod {
+			record.GracePeriod = gracePeriod
+		}
+		p.recordDeleting[options.Pod.UID] = record
+	}
+}
+
+func getGracePeriod(opt *UpdatePodOptions) (int64, bool) {
+	if opt.UpdateType == kubetypes.SyncPodKill && opt.KillPodOptions != nil {
+		podTerminationGracePeriodSecondsOverride := opt.KillPodOptions.PodTerminationGracePeriodSecondsOverride
+		if podTerminationGracePeriodSecondsOverride != nil {
+			return *podTerminationGracePeriodSecondsOverride, true
+		}
+	}
+	deletionGracePeriodSeconds := opt.Pod.ObjectMeta.DeletionGracePeriodSeconds
+	if deletionGracePeriodSeconds != nil {
+		return *deletionGracePeriodSeconds, true
+	}
+	return 0, false
 }
 
 // killPodNow returns a KillPodFunc that can be used to kill a pod.
