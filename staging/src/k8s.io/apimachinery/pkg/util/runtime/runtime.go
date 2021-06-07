@@ -150,6 +150,9 @@ func GetCaller() string {
 // original error, and  the call tree when a panic occurs. This enables error
 // handlers to handle errors and panics the same way.
 func RecoverFromPanic(err *error) {
+	if err == nil {
+		return
+	}
 	if r := recover(); r != nil {
 		// Same as stdlib http server code. Manually allocate stack trace buffer size
 		// to prevent excessively large logs
