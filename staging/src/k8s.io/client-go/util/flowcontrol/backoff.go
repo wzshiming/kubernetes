@@ -72,7 +72,7 @@ func (p *Backoff) Next(id string, eventTime time.Time) {
 	p.Lock()
 	defer p.Unlock()
 	entry, ok := p.perItemBackoff[id]
-	if !ok || hasExpired(eventTime, entry.lastUpdate, p.maxDuration) {
+	if !ok {
 		entry = p.initEntryUnsafe(id)
 	} else {
 		delay := entry.backoff * 2 // exponential
