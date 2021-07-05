@@ -2637,6 +2637,9 @@ func validateProbe(probe *core.Probe, fldPath *field.Path) field.ErrorList {
 	allErrs = append(allErrs, ValidateNonnegativeField(int64(probe.PeriodSeconds), fldPath.Child("periodSeconds"))...)
 	allErrs = append(allErrs, ValidateNonnegativeField(int64(probe.SuccessThreshold), fldPath.Child("successThreshold"))...)
 	allErrs = append(allErrs, ValidateNonnegativeField(int64(probe.FailureThreshold), fldPath.Child("failureThreshold"))...)
+	if probe.TerminationGracePeriodSeconds != nil {
+		allErrs = append(allErrs, ValidateNonnegativeField(*probe.TerminationGracePeriodSeconds, fldPath.Child("terminationGracePeriodSeconds"))...)
+	}
 	return allErrs
 }
 
